@@ -1,0 +1,52 @@
+{
+  "periods": 4,
+  "items": [
+    {
+      "id": "P",
+      "lead_time": 1,
+      "lot_size": 1,
+      "on_hand": 1,
+      "safety_stock": 0
+    },
+    {
+      "id": "A",
+      "lead_time": 1,
+      "lot_size": 5,
+      "on_hand": 3,
+      "safety_stock": 1
+    },
+    {
+      "id": "B",
+      "lead_time": 0,
+      "lot_size": 1,
+      "on_hand": 0,
+      "safety_stock": 0
+    }
+  ],
+  "bom": [
+    {
+      "parent": "P",
+      "component": "A",
+      "quantity": 2
+    },
+    {
+      "parent": "P",
+      "component": "B",
+      "quantity": 1
+    }
+  ],
+  "demand": [
+    {
+      "item": "P",
+      "period": 3,
+      "quantity": 4
+    }
+  ],
+  "receipts": [
+    {
+      "item": "A",
+      "period": 2,
+      "quantity": 2
+    }
+  ]
+}

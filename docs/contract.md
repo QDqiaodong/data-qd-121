@@ -98,3 +98,47 @@ planned_receipt、作业完工入库），再开工（按 BOM 用量扣减组件
 期末，逐期平衡）。无解同样输出结构化结果（库存账为空、占用为零），退出码 0；
 输入错误退出 2 并保留旧输出文件。修订后仍可用 `--version` 读取任一旧版本排程。
 
+# 实际批次追溯 v4
+
+在版本库（v2）之外新增**独立的追溯库**与 `build`/`recall` 两个 CLI 子命令。
+`build` 以只读方式（`mode=ro`）打开计划库，只取物料标识与 BOM，绝不写入计划库；
+计划 JSON 直读模式、修订库与排程的既有入口、退出码和输出保持不变。
+
+## 事件 CSV 与导入契约
+
+- 输入为 UTF-8 CSV，表头严格为 `type,event,lot,item,quantity`，最多 200000 数据行、
+  文件不超过 64 MiB；按行流式读入，每 1000 行一批写入暂存表，明细与依赖边从不整体
+  装入 Python 内存。`quantity` 为严格正十进制整数（1..10^9），标识符规则与计划库一致。
+- `type` 仅允许 `receipt`/`consume`/`produce`，行序任意（乱序由库内依赖解析归位）。
+- `receipt` 是叶件的**唯一新 lot 来源**：receipt 行只能建叶件 lot；`produce` 行只能建
+  非叶件 lot；每个 lot 恰好由一条 receipt/produce 行创建，重复产出拒绝。
+- 一个生产 event 可 `consume` 多个旧 lot、`produce` 同一父件的多个新 lot；同一 event 内
+  对同一 lot 只能有一条 consume。receipt event 只允许 receipt 行；生产 event 必须同时
+  至少有一条 produce 和一条 consume，且只产出一个父件。
+- 每个组件在一个生产 event 上的**总耗用量必须恰好等于该 event 父件总产量 × BOM 用量**；
+  耗用未定义 lot（悬空引用）、lot 与 item 不符、耗用非该父件 BOM 组件、同一 lot 跨 event
+  累计耗用超过其 lot 数量（累计超领）全部拒绝。
+- 拒绝条件还包括：未知件（不在计划库物料集）、lot 依赖成环。生产顺序由 lot 依赖经
+  SQLite 内的批量 Kahn 扫描确定（lot → 领用 event → 产出 lot），全部为集合式 SQL，
+  不把边装入内存；扫不动的残余 event 即证明存在循环。
+- 整批失败无半仓：导入在目标目录的隐藏临时库内单事务完成，提交后才 `os.replace`
+  原子发布到目标路径；任何校验失败或进程中止都只删除临时库，目标路径不出现数据库，
+  已存在的非空目标库拒绝覆盖。成功后落库 event、lot（含生产顺序 seq）、逐 event 的
+  领用/产出行、BOM 物料引用以及源文件 SHA256 与行数元数据。
+
+## recall 完全混匀传播契约
+
+- `recall --trace-database <库> --lot <原料 receipt lot>` 只接受 receipt lot；以只读连接
+  打开追溯库（临时表除外不写任何持久数据），按生产顺序逐 event 传播该来源 lot 的数量。
+- 完全混匀：event 对某个被领用 lot 取其来源占比 `attr(lot) × 领用量 / lot 总量`，
+  各被领用 lot 的贡献汇成 event 池；产出 lot 按 `产量 / event 总产量` 分摊该池。
+  部分领用与多产出都按比例传播；先分拆再汇合的流量只经过混匀池一次，不重复计数。
+- 全部算术使用 `fractions.Fraction`，中间分数存于 TEMP 表，逐 event 流式处理。
+- 输出每个仍有正余量的 lot：`remaining_quantity`、来源数量 `source_quantity`（精确分数
+  numerator/denominator 与分数字符串）、每单位该 lot 所含来源数量 `source_per_unit`
+  （浓度而非有界比例：BOM 每件产出耗用多件来源时可大于 1）；报告头含来源
+  lot、混匀模型、来源归属总量 `total_attributed` 与守恒校验。所有剩余 lot 的来源归属
+  之和必须**精确等于**原料 receipt 原量（守恒断言在库内先校验再输出，不平即报错）。
+- 结果可直接打印为单个 JSON，或经 `--output` 原子写文件（逐 lot 流式序列化，不缓存整表）；
+  输入错误退出 2。
+

@@ -9,5 +9,6 @@ requires-python = ">=3.11"
 dependencies = []
 [project.scripts]
 material-plan = "material_plan.cli:main"
+material-trace = "material_plan.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]

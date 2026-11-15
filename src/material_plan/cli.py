@@ -1,8 +1,10 @@
 DESCRIPTION = 'Time-phased net requirements planning with shared components'
 import argparse
 import json
+import os
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 from .common import read, save
@@ -11,6 +13,7 @@ from .schedule import schedule_version
 from .store import (BatchConflict, DuplicateBatch, RevisionError, apply_batch,
                     initialize, list_versions, load_report,
                     load_schedule_source)
+from .trace import RecallResult, build as build_trace
 
 
 def run(source):
@@ -72,6 +75,67 @@ def _schedule(args):
     return 0
 
 
+def _build(args):
+    summary = build_trace(args.trace_database, args.plan_database, args.events)
+    print(json.dumps(summary, sort_keys=True, ensure_ascii=False))
+    return 0
+
+
+def _write_recall_stream(path, result):
+    """Write the recall report incrementally so large lot sets are not buffered."""
+    dest = Path(path)
+    if dest.is_symlink():
+        raise ValueError('output cannot be a symlink')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=dest.parent, delete=False) as stream:
+            temp = stream.name
+            stream.write('{\n')
+            header = result.header()
+            stream.write('"header": ')
+            json.dump(header, stream, sort_keys=True, ensure_ascii=False,
+                      allow_nan=False)
+            stream.write(',\n"remaining_lots": [\n')
+            first = True
+            for row in result.rows():
+                if not first:
+                    stream.write(',\n')
+                first = False
+                json.dump(row, stream, sort_keys=True, ensure_ascii=False,
+                          allow_nan=False)
+            if first:
+                stream.write(']\n')
+            else:
+                stream.write('\n]\n')
+            stream.write('}\n')
+        os.replace(temp, dest)
+    finally:
+        if temp and os.path.exists(temp):
+            os.unlink(temp)
+
+
+def _recall(args):
+    with RecallResult(args.trace_database, args.lot) as result:
+        if args.output:
+            _write_recall_stream(args.output, result)
+            print(json.dumps(
+                {'database': str(args.trace_database), 'lot': args.lot,
+                 'output': str(args.output),
+                 'total_attributed': result.header()['total_attributed']},
+                sort_keys=True, ensure_ascii=False, allow_nan=False))
+        else:
+            print(json.dumps(_recall_payload(result), sort_keys=True,
+                             ensure_ascii=False, allow_nan=False))
+    return 0
+
+
+def _recall_payload(result):
+    return {'header': result.header(),
+            'remaining_lots': list(result.rows())}
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     sub = parser.add_subparsers(dest='command')
@@ -107,6 +171,20 @@ def _build_parser():
     p_schedule.add_argument('--version', type=int)
     p_schedule.add_argument('--output', type=Path)
     p_schedule.set_defaults(func=_schedule)
+
+    p_build = sub.add_parser(
+        'build', help='import out-of-order lot events into a trace database')
+    p_build.add_argument('--plan-database', type=Path, required=True)
+    p_build.add_argument('--events', type=Path, required=True)
+    p_build.add_argument('--trace-database', type=Path, required=True)
+    p_build.set_defaults(func=_build)
+
+    p_recall = sub.add_parser(
+        'recall', help='exact-fraction lot recall from a trace database')
+    p_recall.add_argument('--trace-database', type=Path, required=True)
+    p_recall.add_argument('--lot', required=True)
+    p_recall.add_argument('--output', type=Path)
+    p_recall.set_defaults(func=_recall)
 
     # Legacy whole-file mode (unchanged contract).
     parser.add_argument('--source', type=Path)

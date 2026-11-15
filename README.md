@@ -68,6 +68,33 @@ printf '%s' '{"jobs":[{"item":"P","resource":"line-a","duration":1}],
 报告含版本、逐作业开工/完工、逐期资源占用与逐物料库存账；无解输出结构化结果（退出码 0），
 输入错误退出 2 并保留旧输出。排程不写入版本库，修订后任一旧版本仍可排程。
 
+## 实际批次追溯（build / recall）
+
+`trace.py` 在版本库之外提供独立的**实际批次追溯库**（标准库 sqlite3），新增 `build` 与
+`recall` 两个子命令（也可经 `material-trace` 入口调用）。`build` 只读计划库的物料与 BOM
+（`mode=ro`，绝不写入），把乱序事件 CSV（`type,event,lot,item,quantity`，最多 20 万行）
+流式导入新建追溯库；暂存、校验与依赖解析全部在 SQLite 内完成，明细与依赖边不整体装入内存，
+20 万行构建的 Python 峰值堆内存约 2 MiB。receipt 是叶件唯一新 lot；同一生产 event 可领用多个
+旧 lot、产出同一父件多个新 lot，各组件总耗用必须恰为产量 × BOM 用量。未知件、重复产出、
+循环、悬空引用、累计超领等一律拒绝，整批在隐藏临时库内单事务完成后原子改名发布，失败不留半仓。
+生产顺序由 lot 依赖经库内批量 Kahn 扫描确定。规则与输出字段见
+[数据契约 · 实际批次追溯 v4](docs/contract.md)。
+
+```sh
+.venv/bin/material-plan init --source fixtures/input.json --database run/plan.db
+.venv/bin/material-plan build --plan-database run/plan.db \
+  --events fixtures/trace_events.csv --trace-database run/trace.db
+.venv/bin/material-plan recall --trace-database run/trace.db --lot a1 \
+  --output run/recall-a1.json
+```
+
+`recall` 指定原料 receipt lot，按完全混匀把其来源数量随部分领用与产出比例传播，用
+`fractions.Fraction` 给出每个剩余 lot 中来源数量的**精确分数**与每单位浓度 `source_per_unit`；
+先分拆再汇合不重复计数，
+所有剩余 lot 的来源归属之和精确等于原料原量（库内先做守恒断言再输出）。追溯库以只读连接打开，
+不写任何持久数据；结果可直接打印为 JSON 或经 `--output` 原子流式写文件。原 JSON 直读模式、
+修订库与排程的入口、退出码和输出完全保持。
+
 ## 业务与样例结果
 
 P期3需求4，库存1，计划到货3、期2下达；A期2毛需6，按批量5补货后结余4。

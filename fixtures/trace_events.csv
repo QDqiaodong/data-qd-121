@@ -1,0 +1,11 @@
+type,event,lot,item,quantity
+produce,E1,P1,P,4
+consume,E1,a1,A,5
+consume,E1,a2,A,3
+consume,E1,b1,B,4
+produce,E2,P2,P,2
+consume,E2,a1,A,4
+consume,E2,b1,B,2
+receipt,R1,a1,A,10
+receipt,R1,a2,A,10
+receipt,R2,b1,B,6

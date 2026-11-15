@@ -10,9 +10,11 @@ from pathlib import Path
 from .common import read, save
 from .model import analyze
 from .schedule import schedule_version
-from .store import (BatchConflict, DuplicateBatch, RevisionError, apply_batch,
-                    initialize, list_versions, load_report,
-                    load_schedule_source)
+from .store import (BatchConflict, DuplicateBatch, DuplicateOrder,
+                    ReservationRejected, apply_batch,
+                    availability as load_availability, initialize,
+                    list_versions, load_report, load_schedule_source,
+                    release_order, reserve_order)
 from .trace import RecallResult, build as build_trace
 
 
@@ -58,6 +60,27 @@ def _report(args):
 
 def _versions(args):
     print(json.dumps(list_versions(args.database), sort_keys=True, ensure_ascii=False))
+    return 0
+
+
+def _reserve(args):
+    payload = _read_payload(args.order)
+    result = reserve_order(args.database, payload)
+    print(json.dumps(result, sort_keys=True, ensure_ascii=False, allow_nan=False))
+    return 0
+
+
+def _release(args):
+    result = release_order(args.database, args.order_id)
+    print(json.dumps(result, sort_keys=True, ensure_ascii=False, allow_nan=False))
+    return 0
+
+
+def _availability(args):
+    report = load_availability(args.database)
+    if args.output:
+        save(args.output, report)
+    print(json.dumps(report, sort_keys=True, ensure_ascii=False, allow_nan=False))
     return 0
 
 
@@ -164,6 +187,24 @@ def _build_parser():
     p_versions.add_argument('--database', type=Path, required=True)
     p_versions.set_defaults(func=_versions)
 
+    p_reserve = sub.add_parser(
+        'reserve', help='reserve leaf supply for one multi-line sales order')
+    p_reserve.add_argument('--database', type=Path, required=True)
+    p_reserve.add_argument('--order', type=Path, required=True)
+    p_reserve.set_defaults(func=_reserve)
+
+    p_release = sub.add_parser(
+        'release', help='release one sales order and re-allocate the rest')
+    p_release.add_argument('--database', type=Path, required=True)
+    p_release.add_argument('--order-id', type=int, required=True)
+    p_release.set_defaults(func=_release)
+
+    p_availability = sub.add_parser(
+        'availability', help='per-supply remaining availability of leaf items')
+    p_availability.add_argument('--database', type=Path, required=True)
+    p_availability.add_argument('--output', type=Path)
+    p_availability.set_defaults(func=_availability)
+
     p_schedule = sub.add_parser(
         'schedule', help='finite-capacity schedule of one committed revision')
     p_schedule.add_argument('--database', type=Path, required=True)
@@ -204,7 +245,8 @@ def main(argv=None):
             raise ValueError('input and output must differ')
         report = run(args.source)
         save(args.output, report)
-    except (BatchConflict, DuplicateBatch) as error:
+    except (BatchConflict, DuplicateBatch, DuplicateOrder,
+            ReservationRejected) as error:
         print(str(error), file=sys.stderr)
         return 3
     except (ValueError, TypeError, KeyError, OSError, OverflowError,

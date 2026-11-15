@@ -68,6 +68,33 @@ printf '%s' '{"jobs":[{"item":"P","resource":"line-a","duration":1}],
 报告含版本、逐作业开工/完工、逐期资源占用与逐物料库存账；无解输出结构化结果（退出码 0），
 输入错误退出 2 并保留旧输出。排程不写入版本库，修订后任一旧版本仍可排程。
 
+## 叶件销售承诺（reserve / release / availability）
+
+`reserve`/`release`/`availability` 在同一个修订库内提供叶件销售承诺（schema 升至 v2，
+旧库首次承诺写入时在同事务内惰性迁移，旧 report 与旧版本始终可读）。订单以整数 ID 标识，
+负载含多行，每行给候选叶件物料集、整数数量与交期，数量可在多个供给点间拆整数份。
+同 ID 同内容重放幂等、异内容冲突；`release` 后 ID 永不复用、重放不复活。
+
+可承诺供给仅为期初库存与 scheduled_receipt。先逐期 FIFO 满足版本毛需求（欠量结转、
+优先于一切承诺），剩余供给再对**全部活跃订单联合分配**，只取不晚于交期的候选供给；
+可行性由二部最大流判定，杜绝逐单贪心，多解按 `(订单ID,行号,物料,供给期)` 分配向量取
+字典序最大。`reserve` 全单成功或全拒；`apply` 按修订后供需在同事务内重分配，任一活跃
+承诺失配则整笔修订拒绝（退出码 3），版本、订单、分配同事务。`availability` 只读输出
+逐供给点的版本耗用、已承诺与余量。规则与字段见
+[数据契约 · 叶件销售承诺 v5](docs/contract.md)。
+
+```sh
+printf '%s' '{"order_id":1,"lines":[{"line_no":0,"candidates":["A","B"],
+  "quantity":4,"due_period":3},{"line_no":1,"candidates":["A"],
+  "quantity":1,"due_period":3}]}' > run/order.json
+.venv/bin/material-plan reserve --database run/plan.db --order run/order.json
+.venv/bin/material-plan availability --database run/plan.db
+.venv/bin/material-plan release --database run/plan.db --order-id 1
+```
+
+刻意采用每次全量重算而非增广改配：结果可由库内数据独立复算、历代号审计链清晰，
+代价是随订单增长变慢；增广更快但撤改与多供给竞争难以审计。权衡说明见数据契约 v5。
+
 ## 实际批次追溯（build / recall）
 
 `trace.py` 在版本库之外提供独立的**实际批次追溯库**（标准库 sqlite3），新增 `build` 与

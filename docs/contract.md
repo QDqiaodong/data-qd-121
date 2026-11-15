@@ -59,3 +59,42 @@ BOM 边与物料策略（lead_time/lot_size/on_hand/safety_stock）在 `init` �
 `plan_diffs`、`recomputed_items`；旧版本输入与计划永久保留。`versions` 列出版本链。
 原 JSON 直读直出的 CLI 行为（`--source/--output`、退出码、原子发布、源哈希）保持不变。
 
+# 有限产能排程 v3
+
+`schedule` 子命令以**只读**方式打开版本库（`mode=ro`，绝不写入、不建版本、不缺省建文件），
+读取指定版本（默认当前头）的计划，叠加一份资源日历 JSON，把非叶物料的计划到货落成
+有限产能下的装配作业开工期。限 32 期、12 个装配作业，超出即输入错误。
+
+## 作业与日历
+
+- 非叶物料每个非零 planned_receipt 生成一个**不可拆作业**：数量固定为该计划到货量，
+  最迟完工期固定为该到货期；作业可在更早时期完工，提前量进入库存。
+- 日历 `{"jobs": [...], "resources": [...]}` 仅这两个字段。`jobs` 每行
+  `{item, resource, duration}`：item 必须存在且为非叶（叶件为采购件，拒绝配置），
+  resource 必须已定义，duration 为 1..8 整数期，**工时替代 lead_time**；同一物料重复配置拒绝。
+  每个有作业的非叶物料必须配置；为尚无作业的非叶物料预留配置不报错但不参与排程。
+- `resources` 每行 `{id, capacity}`：capacity 为逐期 0/1 整数数组，长度必须等于周期数；
+  0 表示该期停机。资源 id 重复拒绝，未使用资源允许。
+- 叶件 planned_receipt 是固定采购供给，期初库存与 scheduled_receipt 同样可用。
+
+## 期间语义
+
+作业占用资源 `[start, start+duration)` 的连续区间，逐期占用量不得超过该期 0/1 容量，
+完工期 = start+duration ≤ 最迟完工期。同一期内先到货/完工（scheduled_receipt、叶件
+planned_receipt、作业完工入库），再开工（按 BOM 用量扣减组件），再扣独立需求；
+每一步库存均不得为负。开工期的组件扣减替代 v1 的提前期展开，排程不再使用 lead_time。
+
+## 求解与输出
+
+回溯搜索联合检查资源与物料约束：容量前缀界（已占用 + 未排作业在必达窗口内的工时
+不得超过累计容量）与物料乐观界（未排作业按最早完工计供给、按最迟开工计消耗，仍负则剪枝）
+均为必要条件剪枝，不割可行解，因此要么给出解、要么**完备判定无解**——贪心失败不算无解。
+多解时按（最迟完工期, item）作业序的开工向量取字典序最小。
+
+报告含 `revision`（读取版本与当前头）、`calendar_sha256` 与 `result`：`status`
+（scheduled/infeasible）、`jobs`（item、数量、最迟完工期、资源、工时、开工期、完工期；
+无解时开工/完工为 null）、逐资源逐期 `resource_usage`（capacity 与 used）、逐物料逐期
+库存账（期初、scheduled_receipt、叶件 planned_receipt、完工入库、作业扣件、独立需求、
+期末，逐期平衡）。无解同样输出结构化结果（库存账为空、占用为零），退出码 0；
+输入错误退出 2 并保留旧输出文件。修订后仍可用 `--version` 读取任一旧版本排程。
+

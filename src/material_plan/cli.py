@@ -7,8 +7,10 @@ from pathlib import Path
 
 from .common import read, save
 from .model import analyze
+from .schedule import schedule_version
 from .store import (BatchConflict, DuplicateBatch, RevisionError, apply_batch,
-                    initialize, list_versions, load_report)
+                    initialize, list_versions, load_report,
+                    load_schedule_source)
 
 
 def run(source):
@@ -56,6 +58,20 @@ def _versions(args):
     return 0
 
 
+def _schedule(args):
+    calendar, digest = read(args.calendar)
+    source = load_schedule_source(args.database, args.version)
+    report = {'schema_version': 1,
+              'revision': {'version': source['version'],
+                           'head_version': source['head_version']},
+              'calendar_sha256': digest,
+              'result': schedule_version(source, calendar)}
+    if args.output:
+        save(args.output, report)
+    print(json.dumps(report, sort_keys=True, ensure_ascii=False, allow_nan=False))
+    return 0
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     sub = parser.add_subparsers(dest='command')
@@ -83,6 +99,14 @@ def _build_parser():
     p_versions = sub.add_parser('versions', help='list committed revisions')
     p_versions.add_argument('--database', type=Path, required=True)
     p_versions.set_defaults(func=_versions)
+
+    p_schedule = sub.add_parser(
+        'schedule', help='finite-capacity schedule of one committed revision')
+    p_schedule.add_argument('--database', type=Path, required=True)
+    p_schedule.add_argument('--calendar', type=Path, required=True)
+    p_schedule.add_argument('--version', type=int)
+    p_schedule.add_argument('--output', type=Path)
+    p_schedule.set_defaults(func=_schedule)
 
     # Legacy whole-file mode (unchanged contract).
     parser.add_argument('--source', type=Path)

@@ -49,6 +49,25 @@ printf '{"demand":[{"item":"P","period":3,"delta":2}]}' > run/batch.json
 传播在计划未变化处停止；每个版本的测试都与独立全量净算逐字段比对，并断言无关物料未重算。
 原 `--source/--output` JSON 直读直出行为完全保持。
 
+## 有限产能排程
+
+`schedule` 子命令只读指定版本（默认当前头）的计划与一份资源日历 JSON，把非叶物料的非零
+planned_receipt 落成不可拆装配作业：数量与最迟完工期固定，日历配置的 1..8 期工时替代
+lead_time，各资源逐期容量 0/1（0 即停机）。限 32 期、12 个作业。同期内先到货/完工、再开工
+按 BOM 扣件、再扣独立需求，库存不得为负；叶件 planned_receipt 为固定采购供给。回溯搜索联合
+资源与物料约束，求解或完备判无解（贪心失败不算无解），多解按（最迟完工期,item）作业序的开工
+向量取字典序最小。规则详见 [数据契约 · 有限产能排程](docs/contract.md)。
+
+```sh
+printf '%s' '{"jobs":[{"item":"P","resource":"line-a","duration":1}],
+  "resources":[{"id":"line-a","capacity":[1,1,1,1]}]}' > run/calendar.json
+.venv/bin/material-plan schedule --database run/plan.db --version 0 \
+  --calendar run/calendar.json --output run/schedule.json
+```
+
+报告含版本、逐作业开工/完工、逐期资源占用与逐物料库存账；无解输出结构化结果（退出码 0），
+输入错误退出 2 并保留旧输出。排程不写入版本库，修订后任一旧版本仍可排程。
+
 ## 业务与样例结果
 
 P期3需求4，库存1，计划到货3、期2下达；A期2毛需6，按批量5补货后结余4。

@@ -104,8 +104,14 @@ class DuplicateBatch(RevisionError):
     """Batch id already exists (with differing or identical content)."""
 
 
-def connect(db_path):
-    conn = sqlite3.connect(str(db_path))
+def connect(db_path, readonly=False):
+    if readonly:
+        # mode=ro never creates the file and rejects every write, which is
+        # what the scheduling reader relies on.
+        conn = sqlite3.connect(
+            'file:' + str(Path(db_path).absolute()) + '?mode=ro', uri=True)
+    else:
+        conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
     conn.execute('PRAGMA busy_timeout = 15000')
@@ -384,6 +390,49 @@ def list_versions(db_path):
             'SELECT v.version, v.created_by_batch, v.base_version, v.parent_version, v.created_at, '
             'b.payload_sha256 FROM version v LEFT JOIN batch b ON b.version = v.version '
             'ORDER BY v.version')]
+    finally:
+        conn.close()
+
+
+def load_schedule_source(db_path, version=None):
+    """Read-only view of one committed version for finite-capacity scheduling.
+
+    Returns the static data (periods, policies, BOM, planning order), the
+    independent demand and scheduled receipts exactly as committed at
+    ``version`` (later batches are unwound from the current cells), and the
+    per-item planned receipts of that version's plan.  The database is opened
+    read-only and never modified.
+    """
+    conn = connect(db_path, readonly=True)
+    try:
+        head = conn.execute('SELECT version FROM head WHERE only_id = 1').fetchone()
+        if head is None:
+            raise RevisionError('not an initialized plan database')
+        head = head['version']
+        if version is None:
+            version = head
+        version = _as_version(version)
+        if conn.execute(
+                'SELECT 1 FROM version WHERE version = ?', (version,)).fetchone() is None:
+            raise RevisionError(f'unknown version {version}')
+        periods, items, bom, order = _load_static(conn)
+        demand, receipts = _load_inputs(conn, items, periods)
+        later = conn.execute(
+            'SELECT canonical_payload FROM batch WHERE version > ? '
+            'ORDER BY version DESC', (version,)).fetchall()
+        for row in later:
+            payload = json.loads(row['canonical_payload'])
+            for kind, target in (('demand', demand), ('receipts', receipts)):
+                for item, period, delta in payload[kind]:
+                    target[item][period] -= delta
+        plans = _load_head_plans(conn, version, items, periods)
+        planned = {item: [0] * periods for item in items}
+        for item in order:
+            for row in plans[item]['periods']:
+                planned[item][row['period']] = row['planned_receipt']
+        return {'version': version, 'head_version': head, 'periods': periods,
+                'items': items, 'bom': bom, 'order': order, 'demand': demand,
+                'receipts': receipts, 'planned_receipts': planned}
     finally:
         conn.close()
 
